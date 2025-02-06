@@ -1,0 +1,10 @@
+[Unit]
+Description=Run zhengtu tool weekly at 4:30am on Monday
+
+[Timer]
+OnCalendar=Mon *-*-* 04:30:00
+Persistent=true
+Unit=zhengtu.service
+
+[Install]
+WantedBy=timers.target

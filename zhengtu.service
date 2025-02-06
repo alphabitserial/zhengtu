@@ -1,0 +1,6 @@
+[Unit]
+Description=Run zhengtu tool
+
+[Service]
+ExecStart=%h/.zhengtu/bin/zhengtu
+

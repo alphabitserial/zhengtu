@@ -1,0 +1,153 @@
+#!/usr/bin/env nu
+##################
+### Zhēngtú      #
+### Journey      #
+##################
+### simple Zig   #
+### toolchain    #
+### installer    #
+##################
+
+const DEPS = ['git' 'tar']
+const ZHENGTU_HOME = ($nu.home-path | path join '.zhengtu')
+const ZHENGTU_BIN = ($ZHENGTU_HOME | path join 'bin')
+const ZIG_DIR = ($ZHENGTU_HOME | path join 'zig')
+const ZLS_DIR = ($ZHENGTU_HOME | path join 'zls')
+const ZLS_REPO = 'https://github.com/zigtools/zls.git'
+
+def check_deps [] {
+  let missing = $DEPS | where {|d| (which $d | is-empty)}
+  if ($missing | is-not-empty) {
+    error make {
+      msg: $"Missing required dependencies: ($missing | str join ', ')"
+    }
+  }
+}
+
+def zhengtu_setup [] {
+  try {
+    mkdir $ZHENGTU_HOME $ZHENGTU_BIN $ZIG_DIR $ZLS_DIR
+  } catch {|err|
+      error make --unspanned {
+        msg: $"Setup failed: ($err.msg)"
+      }
+  }
+}
+
+def update_check [] {
+  let current_vers = try {
+    open ($ZHENGTU_HOME | path join 'version') | from nuon
+  } catch { {zig: "", zls: ""} }
+
+  let zig_data = http get https://ziglang.org/download/index.json | get master
+  let zls_ver = do {
+    if not (($ZLS_DIR | path join '.git') | path exists) {
+      git clone -q $ZLS_REPO $ZLS_DIR
+    }
+    git -C $ZLS_DIR pull -q
+    git -C $ZLS_DIR describe
+  }
+
+  {
+    zig: {
+      update: ($current_vers.zig != $zig_data.version),
+      data: $zig_data
+    },
+    zls: {
+      update: ($current_vers.zls != $zls_ver),
+      to: $zls_ver
+    }
+  }
+}
+
+def sha_validate [bytes, expected] {
+  if ($bytes | hash sha256) != $expected {
+    error make --unspanned {
+      msg: "Checksum verification failed"
+    }
+  }
+}
+
+def zig_install [tarball: string, shasum: string] {
+  print 'Installing Zig...'
+  try {
+    let txz = ($ZHENGTU_HOME | path join 'zig.txz')
+    if ($txz | path exists) and (sha_validate (open --raw $txz) $shasum) == true {
+      tar xf $txz -C $ZIG_DIR --strip-components=1
+    } else {
+      http get -r $tarball | save -f $txz
+      sha_validate (open --raw $txz) $shasum
+      tar xf $txz -C $ZIG_DIR --strip-components=1
+      ln -sf ($ZIG_DIR | path join 'zig') ($ZHENGTU_BIN | path join 'zig')
+    }
+  } catch {
+    |err| error make --unspanned {
+      msg: $"Zig installation failed: ($err.msg)"
+    }
+  }
+}
+
+def zls_install [] {
+  print 'Installing ZLS...'
+  try {
+    cd $ZLS_DIR
+    ^($ZHENGTU_BIN | path join 'zig') build -Doptimize=ReleaseSafe
+    ln -sf ($ZLS_DIR | path join 'zig-out' 'bin' 'zls') ($ZHENGTU_BIN | path join 'zls')
+  } catch {
+    |err| error make --unspanned {
+      msg: $"ZLS build failed: ($err.msg)"
+    }
+  }
+}
+
+def write_versions [zig_ver: string, zls_ver: string] {
+  try {
+    { zig: $zig_ver, zls: $zls_ver }
+    | to nuon | save -f ($ZHENGTU_HOME | path join 'version')
+  } catch {
+    |err| error make --unspanned {
+      msg: $"Version write failed: ($err.msg)"
+    }
+  }
+}
+
+def check_path [] {
+  let missing = [zhengtu zig zls] | where {|d| (which $d | is-empty)}
+  if ($missing | is-not-empty) {
+    print $"(ansi yellow_bold)!(ansi reset)(ansi yellow) Remember to add ~/.zhengtu/bin to your PATH.(ansi reset)"
+  }
+}
+
+def bail [context: string, err: record] {
+  print $"(ansi red_bold)✗ ($context): (ansi reset)(ansi red)($err.msg)(ansi reset)"
+  exit 1
+}
+
+def main [] {
+  try {
+    check_deps
+
+    if not ($ZHENGTU_HOME | path exists) {
+      zhengtu_setup
+    }
+
+    cd $ZHENGTU_HOME
+    let updates = update_check
+
+    if $updates.zig.update {
+      zig_install $updates.zig.data.x86_64-linux.tarball $updates.zig.data.x86_64-linux.shasum
+    }
+
+    if $updates.zls.update {
+      zls_install
+    }
+
+    write_versions $updates.zig.data.version $updates.zls.to
+    rm -f ($ZHENGTU_HOME | path join 'zig.txz')
+
+    print $"(ansi green_bold)✓(ansi reset)(ansi green) Zig ($updates.zig.data.version), ZLS ($updates.zls.to)(ansi reset)"
+    check_path
+  } catch {
+    |err| bail "Operation failed" $err
+  }
+}
